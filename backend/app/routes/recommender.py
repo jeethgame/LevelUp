@@ -1,8 +1,12 @@
+import logging
+import math
+
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
-import math
+
+logger = logging.getLogger("levelup.recommender")
 
 from app.utils.auth import get_optional_firebase_token
 from app.services.recommender_service import (
@@ -229,5 +233,5 @@ async def route_adopt_roadmap(
         }
 
     except Exception as e:
-        print(f"Error adopting recommender roadmap: {e}")
+        logger.error("Error adopting recommender roadmap: %s", e)
         return {"status": "error", "message": f"Failed to persist: {str(e)}", "user_id": target_uid}

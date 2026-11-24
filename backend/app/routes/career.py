@@ -21,12 +21,10 @@ router = APIRouter(
 @router.get("/roadmap")
 def get_current_roadmap(
     user_id: Optional[str] = Depends(get_optional_firebase_token),
-    uid: Optional[str] = None
 ):
-    target_uid = user_id or uid
-    if not target_uid:
+    if not user_id:
         return {"message": "No user ID provided"}
-    roadmap = get_active_roadmap(target_uid)
+    roadmap = get_active_roadmap(user_id)
     if not roadmap:
         return {"message": "No active roadmap found"}
     return roadmap
@@ -35,44 +33,38 @@ def get_current_roadmap(
 @router.get("/roadmaps")
 def get_all_roadmaps(
     user_id: Optional[str] = Depends(get_optional_firebase_token),
-    uid: Optional[str] = None
 ):
-    target_uid = user_id or uid
-    if not target_uid:
+    if not user_id:
         return []
-    return list_user_roadmaps(target_uid)
+    return list_user_roadmaps(user_id)
 
 
 @router.post("/roadmaps/switch/{roadmap_id}")
 def switch_roadmap(
     roadmap_id: str,
     user_id: Optional[str] = Depends(get_optional_firebase_token),
-    uid: Optional[str] = None
 ):
-    target_uid = user_id or uid
-    if not target_uid:
-        raise HTTPException(status_code=401, detail="User ID required")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
     try:
-        updated = switch_active_roadmap(target_uid, roadmap_id)
+        updated = switch_active_roadmap(user_id, roadmap_id)
         return {"status": "success", "active_roadmap": updated}
     except Exception as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail="Roadmap not found")
 
 
 @router.delete("/roadmaps/{roadmap_id}")
-def delete_roadmap(
+def remove_roadmap(
     roadmap_id: str,
     user_id: Optional[str] = Depends(get_optional_firebase_token),
-    uid: Optional[str] = None
 ):
-    target_uid = user_id or uid
-    if not target_uid:
-        raise HTTPException(status_code=401, detail="User ID required")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
     try:
-        deleted = delete_roadmap_from_library(target_uid, roadmap_id)
+        deleted = delete_roadmap_from_library(user_id, roadmap_id)
         return {"status": "success", "deleted": deleted}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete roadmap")
 
 
 @router.post("/roadmap")

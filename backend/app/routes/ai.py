@@ -1,6 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from typing import Any, Dict, List, Optional
 
 from app.services.ai_service import (
@@ -16,6 +18,7 @@ from app.services.ai_service import (
 from app.services.chat_agent import process_chat_message, auto_organize_tasks, stream_chat_response, run_onboarding_agent
 from app.utils.auth import get_optional_firebase_token
 
+limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix='/ai', tags=['AI'])
 
 
@@ -118,13 +121,15 @@ async def route_weekly_report(body: WeeklyReportRequest, user_id: Optional[str] 
 
 
 @router.post('/chat')
-async def route_chat(body: ChatRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
+@limiter.limit("20/minute")
+async def route_chat(request: Request, body: ChatRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
     result = await process_chat_message(body.messages, body.context)
     return {**result, 'userId': user_id or 'guest_user'}
 
 
 @router.post('/chat/stream')
-async def route_chat_stream(body: ChatRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
+@limiter.limit("20/minute")
+async def route_chat_stream(request: Request, body: ChatRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
     return StreamingResponse(
         stream_chat_response(body.messages, body.context),
         media_type='text/event-stream',
@@ -133,7 +138,8 @@ async def route_chat_stream(body: ChatRequest, user_id: Optional[str] = Depends(
 
 
 @router.post('/auto-organize-tasks')
-async def route_auto_organize_tasks(body: AutoOrganizeTasksRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
+@limiter.limit("10/minute")
+async def route_auto_organize_tasks(request: Request, body: AutoOrganizeTasksRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
     result = await auto_organize_tasks(body.tasks, body.hoursBudget, body.context)
     return {**result, 'userId': user_id or 'guest_user'}
 
@@ -148,7 +154,8 @@ class OnboardingRequest(BaseModel):
 
 
 @router.post('/onboard')
-async def route_onboard(body: OnboardingRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
+@limiter.limit("5/minute")
+async def route_onboard(request: Request, body: OnboardingRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
     result = await run_onboarding_agent(body.dict())
     return {**result, 'userId': user_id or 'guest_user'}
 

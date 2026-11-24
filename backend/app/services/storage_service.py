@@ -1,7 +1,11 @@
-from app.utils.firebase import db
-from datetime import datetime
+import logging
 import re
 import uuid
+from datetime import datetime
+
+from app.utils.firebase import db
+
+logger = logging.getLogger("levelup.storage")
 
 
 def _slugify(text: str) -> str:
@@ -119,7 +123,7 @@ def save_roadmap_to_library(
                     if rm.id != roadmap_id and rm.to_dict().get("is_active"):
                         rm.reference.update({"is_active": False, "updated_at": now})
             except Exception as e:
-                print(f"Warning updating active flags: {e}")
+                logger.warning("Error updating active flags: %s", e)
 
         # Save to roadmaps collection
         db.collection("users").document(user_id).collection("roadmaps").document(roadmap_id).set(doc_data)
@@ -128,11 +132,11 @@ def save_roadmap_to_library(
         if is_active:
             db.collection("users").document(user_id).collection("active_roadmap").document("current").set(doc_data)
 
-        print(f"Roadmap '{title}' saved to library (ID: {roadmap_id}) for user {user_id}")
+        logger.info("Roadmap '%s' saved to library (ID: %s) for user %s", title, roadmap_id, user_id)
         return roadmap_id
 
     except Exception as e:
-        print(f"Error in save_roadmap_to_library: {e}")
+        logger.error("Error in save_roadmap_to_library: %s", e)
         raise
 
 
@@ -179,7 +183,7 @@ def list_user_roadmaps(user_id: str) -> list:
         return result
 
     except Exception as e:
-        print(f"Error listing user roadmaps: {e}")
+        logger.error("Error listing user roadmaps: %s", e)
         # Fallback to single doc
         single = get_active_roadmap(user_id)
         return [single] if single else []
@@ -237,7 +241,7 @@ def delete_roadmap_from_library(user_id: str, roadmap_id: str) -> bool:
 
         return True
     except Exception as e:
-        print(f"Error deleting roadmap: {e}")
+        logger.error("Error deleting roadmap: %s", e)
         raise
 
 

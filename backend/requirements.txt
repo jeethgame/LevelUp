@@ -6,6 +6,7 @@ openai
 firebase-admin
 httptools
 python-multipart
+slowapi            # Rate limiting for FastAPI endpoints
 # ── Skill Gap Analyzer dependencies ──────────────────────
 PyMuPDF           # PDF in-memory parsing  (fitz)
 python-docx       # DOCX in-memory parsing

@@ -1,7 +1,10 @@
+import logging
 import os
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
+
+logger = logging.getLogger("levelup.firebase")
 
 firebase_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
 firebase_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
@@ -27,19 +30,19 @@ resolved_path = _resolve_service_account_path(firebase_path)
 if not firebase_admin._apps:
     if firebase_json:
         try:
-            print("Initializing Firebase from environment JSON...")
+            logger.info("Initializing Firebase from environment JSON")
             cred = credentials.Certificate(json.loads(firebase_json))
             firebase_admin.initialize_app(cred)
         except Exception as e:
-            print(f"Warning: Failed to initialize Firebase from JSON env var: {e}")
+            logger.error("Failed to initialize Firebase from JSON env var: %s", e)
             raise
     elif resolved_path:
-        print(f"Initializing Firebase from file: {resolved_path}")
+        logger.info("Initializing Firebase from file: %s", resolved_path)
         cred = credentials.Certificate(resolved_path)
         firebase_admin.initialize_app(cred)
     else:
         try:
-            print("Attempting default Firebase initialization with projectId...")
+            logger.info("Attempting default Firebase initialization with projectId")
             firebase_admin.initialize_app(options={"projectId": "levelup-d7753"})
         except Exception as e:
             raise RuntimeError(

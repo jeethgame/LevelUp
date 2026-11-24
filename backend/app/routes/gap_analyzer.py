@@ -15,12 +15,18 @@ Processing pipeline
 6. Persist result to Firestore       (BackgroundTask – non-blocking)
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.auth import get_optional_firebase_token
+
+limiter = Limiter(key_func=get_remote_address)
 from app.services.analyzer.parser import extract_text_from_file
 from app.services.analyzer.extractor import SkillExtractor
 from app.services.analyzer.matcher import calculate_semantic_match, build_learning_velocity
@@ -87,7 +93,9 @@ class AdoptRoadmapRequest(BaseModel):
         "calibrated to your available hours per week."
     ),
 )
+@limiter.limit("5/minute")
 async def analyze_skill_gap(
+    request: Request,
     background_tasks: BackgroundTasks,
     # ── Form inputs (multipart/form-data – required when mixing UploadFile + fields)
     resume_file:    UploadFile = File(...,      description="Resume in PDF, DOCX, or TXT format"),
@@ -190,7 +198,7 @@ async def adopt_gap_roadmap(
     3. Saves to Firestore (user's active_roadmap collection)
     4. Returns confirmation with skill count
     """
-    print(f"DEBUG: Received adopt-roadmap request for user: {body.user_id}")
+    logging.getLogger("levelup.gap_analyzer").info("Adopt-roadmap request for user: %s", body.user_id)
     try:
         user_id = auth_user_id or body.user_id
 
@@ -312,7 +320,7 @@ async def adopt_gap_roadmap(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in adopt_gap_roadmap: {str(e)}")
+        logging.getLogger("levelup.gap_analyzer").error("Error in adopt_gap_roadmap: %s", e)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to adopt roadmap: {str(e)}"

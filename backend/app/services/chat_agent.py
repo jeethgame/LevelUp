@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
 import urllib.request
 from app.services.llm_client import get_client, parse_llm_json
+
+logger = logging.getLogger("levelup.chat_agent")
 
 CHAT_SYSTEM_PROMPT = """You are LevelUP AI Assistant — an expert career coach, coding mentor, and system design reviewer.
 
@@ -363,7 +366,7 @@ async def process_chat_message(
             }
 
     except Exception as e:
-        print(f"Chat agent error: {e}")
+        logger.error("Chat agent error: %s", e)
 
     return _smart_fallback_response(last_user_query, context)
 
@@ -429,7 +432,7 @@ You MUST reply with a valid JSON object matching this schema:
             if isinstance(parsed, dict) and "moves" in parsed:
                 return parsed
         except Exception as e:
-            print(f"Auto-schedule LLM error: {e}")
+            logger.error("Auto-schedule LLM error: %s", e)
 
     # Smart Fallback — respect hours_budget when scheduling focus tasks
     moves = []
@@ -560,7 +563,7 @@ async def stream_chat_response(
             return
 
     except Exception as e:
-        print(f"Stream chat error: {e}")
+        logger.error("Stream chat error: %s", e)
         fallback = _smart_fallback_response(last_user_query, context)
         yield _sse({"type": "token", "content": fallback["reply"]})
         yield _sse({"type": "done", "actions": fallback["actions"], "suggestedFollowUps": fallback["suggestedFollowUps"]})
@@ -647,7 +650,7 @@ async def run_onboarding_agent(profile: Dict[str, Any]) -> Dict[str, Any]:
             }
 
     except Exception as e:
-        print(f"Onboarding agent error: {e}")
+        logger.error("Onboarding agent error: %s", e)
 
     return _onboarding_fallback(profile)
 
