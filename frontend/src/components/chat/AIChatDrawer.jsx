@@ -9,7 +9,9 @@ import {
 import { useTasks } from '../../contexts/TaskContext'
 import { useSkills } from '../../contexts/SkillContext'
 import { useRoadmap } from '../../contexts/RoadmapContext'
-import { sendChatMessage } from '../../services/aiService'
+import { sendChatMessage, streamChatMessage } from '../../services/aiService'
+import { loadChatHistory, saveChatHistory } from '../../services/api'
+import { auth } from '../../firebase'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 
 const STARTER_PROMPTS = [
@@ -28,7 +30,7 @@ export const AIChatDrawer = ({ isOpen, onClose }) => {
     {
       id: 'welcome',
       role: 'assistant',
-      content: '👋 Hi! I am your **LevelUP AI Career & Study Assistant** powered by MiniMax-M3.\n\nI can help you:\n- **Voice-first tutoring & interview practice**\n- **Inspect architecture diagrams & GitHub repos**\n- **Suggest & organize your Kanban tasks & skills** (with your approval)\n\nWhat would you like to level up today?',
+      content: '👋 Hi! I am your **LevelUP AI Career & Study Assistant** with agentic tool calling.\n\nI can help you:\n- **Voice-first tutoring & interview practice**\n- **Inspect architecture diagrams & GitHub repos**\n- **Create, update & organize your tasks & skills** autonomously (with your approval)\n\nWhat would you like to level up today?',
       suggestedFollowUps: [
         'What should I learn next?',
         'Add a task: Review React hooks tomorrow',
@@ -45,6 +47,7 @@ export const AIChatDrawer = ({ isOpen, onClose }) => {
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [imageAttachment, setImageAttachment] = useState(null)
   const [dragOver, setDragOver] = useState(false)
+  const [historyLoaded, setHistoryLoaded] = useState(false)
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -64,6 +67,26 @@ export const AIChatDrawer = ({ isOpen, onClose }) => {
       }, 150)
     }
   }, [isOpen, messages])
+
+  // Load chat history from Firestore on first open
+  useEffect(() => {
+    if (!isOpen || historyLoaded) return
+    const uid = auth.currentUser?.uid
+    if (!uid) { setHistoryLoaded(true); return }
+    loadChatHistory(uid).then(saved => {
+      if (saved && saved.length > 0) setMessages(saved)
+      setHistoryLoaded(true)
+    }).catch(() => setHistoryLoaded(true))
+  }, [isOpen, historyLoaded])
+
+  // Save chat history to Firestore when messages change (debounced)
+  useEffect(() => {
+    if (!historyLoaded || messages.length <= 1) return
+    const uid = auth.currentUser?.uid
+    if (!uid) return
+    const timer = setTimeout(() => saveChatHistory(messages, uid), 1500)
+    return () => clearTimeout(timer)
+  }, [messages, historyLoaded])
 
   // Speech Synthesis Helper
   const speakText = (text) => {
@@ -277,80 +300,90 @@ export const AIChatDrawer = ({ isOpen, onClose }) => {
     setImageAttachment(null)
     setLoading(true)
 
-    // Build context payload
     const context = {
       trackedSkills: skills.map(s => ({ id: s.id, name: s.name || s.title, progress: s.progress, status: s.status })),
       tasks: tasks.map(t => ({ id: t.id, title: t.title, priority: t.priority, status: t.status, deadline: t.deadline })),
       activeRoadmap: roadmap ? { title: roadmap.title, phasesCount: roadmap.phases?.length } : null
     }
 
+    const payload = {
+      messages: nextMessages.map(m => ({ role: m.role, content: m.content, image: m.image })),
+      context
+    }
+
+    const streamingMsgId = 'ai_' + Date.now()
+    const streamingActions = []
+    let streamingText = ''
+
+    // Add a placeholder message for streaming
+    setMessages(prev => [...prev, {
+      id: streamingMsgId,
+      role: 'assistant',
+      content: '',
+      suggestedFollowUps: [],
+      pendingActions: [],
+      actionsExecuted: [],
+      isStreaming: true
+    }])
+
     try {
-      const response = await sendChatMessage({
-        messages: nextMessages.map(m => ({
-          role: m.role,
-          content: m.content,
-          image: m.image
-        })),
-        context
+      await streamChatMessage(payload, {
+        onToken: (token) => {
+          streamingText += token
+          setMessages(prev => prev.map(m =>
+            m.id === streamingMsgId ? { ...m, content: streamingText } : m
+          ))
+        },
+        onToolCall: (action) => {
+          streamingActions.push(action)
+        },
+        onDone: (event) => {
+          const allActions = [...streamingActions, ...(event.actions || [])]
+          const followUps = event.suggestedFollowUps || []
+          setMessages(prev => prev.map(m =>
+            m.id === streamingMsgId
+              ? { ...m, content: streamingText || 'Here is what I found for you!', pendingActions: allActions, suggestedFollowUps: followUps, isStreaming: false }
+              : m
+          ))
+          if (streamingText) speakText(streamingText)
+        },
+        onError: async () => {
+          // Fallback to non-streaming endpoint
+          try {
+            const response = await sendChatMessage(payload)
+            let replyText = response?.reply || response?.content || ''
+            let actions = response?.actions || []
+            let followUps = response?.suggestedFollowUps || []
+
+            if (typeof replyText === 'string' && replyText.trim().startsWith('{')) {
+              try {
+                const p = JSON.parse(replyText.trim())
+                if (p.reply) { replyText = p.reply; actions = p.actions || actions; followUps = p.suggestedFollowUps || followUps }
+              } catch {}
+            }
+
+            setMessages(prev => prev.map(m =>
+              m.id === streamingMsgId
+                ? { ...m, content: replyText || 'Here is what I found for you!', pendingActions: actions, suggestedFollowUps: followUps, isStreaming: false }
+                : m
+            ))
+            speakText(replyText)
+          } catch {
+            setMessages(prev => prev.map(m =>
+              m.id === streamingMsgId
+                ? { ...m, content: '⚠️ I encountered an issue connecting to the AI engine. Please check your network or try again.', suggestedFollowUps: ['Retry', 'Check my tasks'], isStreaming: false }
+                : m
+            ))
+          }
+        }
       })
-
-      // Extract reply, actions, and follow-ups
-      let replyText = response?.reply || response?.content || ''
-      let actions = response?.actions || []
-      let followUps = response?.suggestedFollowUps || []
-
-      if (typeof response === 'string') {
-        try {
-          const p = JSON.parse(response)
-          if (p.reply) {
-            replyText = p.reply
-            actions = p.actions || actions
-            followUps = p.suggestedFollowUps || followUps
-          } else {
-            replyText = response
-          }
-        } catch {
-          replyText = response
-        }
-      }
-
-      if (typeof replyText === 'string' && replyText.trim().startsWith('{')) {
-        try {
-          const p = JSON.parse(replyText.trim())
-          if (p.reply) {
-            replyText = p.reply
-            if (Array.isArray(p.actions)) actions = p.actions
-            if (Array.isArray(p.suggestedFollowUps)) followUps = p.suggestedFollowUps
-          }
-        } catch {
-          // not json
-        }
-      }
-
-      const aiMessage = {
-        id: 'ai_' + Date.now(),
-        role: 'assistant',
-        content: replyText || 'Here is what I found for you!',
-        suggestedFollowUps: followUps,
-        pendingActions: actions, // REQUIRES HUMAN APPROVAL
-        actionsExecuted: []
-      }
-
-      setMessages(prev => [...prev, aiMessage])
-      speakText(aiMessage.content)
     } catch (err) {
       console.error('Chat request failed:', err)
-      setMessages(prev => [
-        ...prev,
-        {
-          id: 'err_' + Date.now(),
-          role: 'assistant',
-          content: '⚠️ I encountered an issue connecting to the AI engine. Please check your network or try again.',
-          suggestedFollowUps: ['Retry', 'Check my tasks'],
-          pendingActions: [],
-          actionsExecuted: []
-        }
-      ])
+      setMessages(prev => prev.map(m =>
+        m.id === streamingMsgId
+          ? { ...m, content: '⚠️ I encountered an issue connecting to the AI engine. Please check your network or try again.', suggestedFollowUps: ['Retry', 'Check my tasks'], isStreaming: false }
+          : m
+      ))
     } finally {
       setLoading(false)
     }
@@ -358,7 +391,7 @@ export const AIChatDrawer = ({ isOpen, onClose }) => {
 
   const handleResetChat = () => {
     stopSpeaking()
-    setMessages([
+    const freshMessages = [
       {
         id: 'welcome_reset',
         role: 'assistant',
@@ -371,7 +404,10 @@ export const AIChatDrawer = ({ isOpen, onClose }) => {
         pendingActions: [],
         actionsExecuted: []
       }
-    ])
+    ]
+    setMessages(freshMessages)
+    const uid = auth.currentUser?.uid
+    if (uid) saveChatHistory(freshMessages, uid)
   }
 
   if (!isOpen) return null
@@ -614,7 +650,7 @@ export const AIChatDrawer = ({ isOpen, onClose }) => {
             )
           })}
 
-          {loading && (
+          {loading && !messages.some(m => m.isStreaming && m.content) && (
             <div className="flex gap-3 items-center">
               <div className="w-8 h-8 rounded-xl bg-orange-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
                 <Sparkles className="w-4 h-4 animate-pulse" />

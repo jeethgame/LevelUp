@@ -2,8 +2,8 @@
   <img src="docs/figures/logo.png" alt="LevelUP Logo" width="380" />
 
   
-  <h3>AI-Powered Career Operating System & Autonomous Learning Path Recommender</h3>
-  <p><em>Turn career ambition into daily execution with MiniMax-M3 LLM, Voice-First Tutoring, Vision Inspector & 1-Click Kanban Auto-Scheduling.</em></p>
+  <h3>AI-Powered Career Operating System with Agentic Tool Calling</h3>
+  <p><em>Multi-step AI agent with real function calling, SSE streaming, human-in-the-loop approval, voice tutoring, and 1-click Kanban auto-scheduling.</em></p>
 
   <p>
     <a href="https://level-up-new.vercel.app"><img src="https://img.shields.io/badge/Live_Demo-Vercel-black?style=for-the-badge&logo=vercel" alt="Vercel" /></a>
@@ -14,7 +14,8 @@
   <p>
     <img src="https://img.shields.io/badge/React_18-20232A?style=flat-square&logo=react&logoColor=61DAFB" />
     <img src="https://img.shields.io/badge/FastAPI-005571?style=flat-square&logo=fastapi" />
-    <img src="https://img.shields.io/badge/MiniMax--M3-FF6B00?style=flat-square&logo=openai" />
+    <img src="https://img.shields.io/badge/NVIDIA_NIM-76B900?style=flat-square&logo=nvidia" />
+    <img src="https://img.shields.io/badge/Agentic_Tool_Calling-FF6B00?style=flat-square&logo=openai" />
     <img src="https://img.shields.io/badge/Firebase_Firestore-FFCA28?style=flat-square&logo=firebase&logoColor=black" />
     <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=flat-square&logo=tailwind-css" />
     <img src="https://img.shields.io/badge/Web_Speech_API-10B981?style=flat-square" />
@@ -165,24 +166,102 @@ Manage personal education credentials, multi-language/skill tags, and perform 1-
 
 ## 🏗️ System Architecture
 
-LevelUP is architected as a modular, asynchronous full-stack platform:
+### High-Level Overview
 
 ```mermaid
 graph TD
-    A[Client Browser: React 18 + Vite] -->|HTTPS / WSS| B[FastAPI Backend Server]
-    A -->|Auth & Firestore Sync| C[(Google Cloud Firestore)]
-    B -->|Async OpenAI SDK| D[MiniMax-M3 LLM Gateway]
-    B -->|Admin SDK Verification| C
-    A -->|Web Speech API| E[Local Audio Synthesis & Recognition]
-    B -->|Public GitHub API| F[GitHub Architecture Inspector]
+    A[React 18 + Vite<br/>Tailwind · Zustand · Radix UI] -->|SSE Streaming + REST| B[FastAPI Backend]
+    A -->|Firebase Client SDK| C[(Firestore NoSQL)]
+    B -->|OpenAI-compatible SDK| D[NVIDIA NIM<br/>Nemotron 3.5 Lightning]
+    B -->|Admin SDK| C
+    A -->|Web Speech API| E[Voice I/O]
+    B -->|GitHub REST API| F[Repo Inspector]
+    B -->|Tool Calling Loop| G[Agent Executor]
+    G -->|create_task · update_skill<br/>update_task_status · etc.| B
 ```
 
-### Tech Stack Matrix:
-- **Frontend:** React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion
-- **Backend:** FastAPI (Python 3.10+), Uvicorn, Pydantic, Python-dotenv
-- **AI Intelligence:** MiniMax-M3 LLM (via OpenAI-compatible API Gateway)
-- **Database & Auth:** Google Cloud Firestore (NoSQL) & Firebase Authentication
-- **Voice Engine:** Native Browser Web Speech Recognition & Speech Synthesis
+### Agentic AI Architecture (the core differentiator)
+
+The chat agent uses **real OpenAI function calling** with a **multi-step reasoning loop** — not prompt engineering that hopes for valid JSON.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  User: "I finished React hooks, update progress and     │
+│         add a task for Redux next"                      │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────────┐
+│  AGENT LOOP (max 5 iterations)                           │
+│                                                          │
+│  Iteration 1:                                            │
+│    LLM → tool_call: update_skill_progress                │
+│           ("React hooks", progress=100)                  │
+│    → Result fed back to LLM                              │
+│                                                          │
+│  Iteration 2:                                            │
+│    LLM → tool_call: create_task                          │
+│           ("Learn Redux", priority="HIGH")               │
+│    → Result fed back to LLM                              │
+│                                                          │
+│  Iteration 3:                                            │
+│    LLM → text: "Done! Updated React hooks to 100%       │
+│           and added a HIGH priority Redux task."         │
+│    → Loop exits                                          │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────────┐
+│  FRONTEND: Human-in-the-loop approval                    │
+│                                                          │
+│  ┌─ Proposed Workspace Changes (2) ──────────────────┐   │
+│  │  ✏️ Update: React hooks → 100%                     │   │
+│  │  ➕ Task: Learn Redux (HIGH)                       │   │
+│  │                                                    │   │
+│  │  [ Approve & Save (2) ]  [ Dismiss ]              │   │
+│  └────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Key design decisions:**
+- **Tool calling > prompt engineering:** Actions come from structured `tool_calls` in the OpenAI SDK, not regex-parsed JSON text. Zero parsing failures.
+- **Agent loop > single-shot:** The LLM can chain 2-5 tool calls per turn, each informed by the results of the previous call.
+- **Human-in-the-loop:** Tool results are "proposed" — the user approves before mutations hit Firestore. No autonomous writes.
+- **SSE streaming:** Tokens appear in real-time via `POST /ai/chat/stream` using Server-Sent Events. Tool calls during streaming are emitted as separate SSE events.
+- **Graceful fallback:** If the model doesn't support tool calling, the system falls back to prompt-based JSON parsing (backward compatible with any OpenAI-compatible model).
+
+### Available Agent Tools
+
+| Tool | What it does |
+|---|---|
+| `create_task` | Add a task to the Kanban board |
+| `update_task_status` | Move task between To Do / In Progress / Completed |
+| `update_task_priority` | Change task priority (HIGH / MEDIUM / LOW) |
+| `delete_task` | Remove a task |
+| `create_skill` | Add a skill to the portfolio |
+| `update_skill_progress` | Set skill progress (0-100%) |
+
+### Onboarding Agent
+
+New users go through a 4-step profile setup. On completion, the **onboarding agent** runs the tool-calling loop to:
+1. Create 3-5 tracked skills from their profile
+2. Create a learning task for each skill
+3. Save their career goal
+
+The user arrives at a pre-populated dashboard on first login — not an empty page.
+
+### Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React 18, Vite, Tailwind CSS, Zustand, React Query, Radix UI, Framer Motion, `@dnd-kit` |
+| Backend | FastAPI, Uvicorn, Pydantic, AsyncOpenAI SDK |
+| AI Model | NVIDIA Nemotron 3.5 Lightning (30B MoE, 1M context, free on NIM) |
+| Database | Google Cloud Firestore (NoSQL) |
+| Auth | Firebase Authentication (Google OAuth + Email/Password) |
+| Voice | Browser Web Speech API (recognition + synthesis) |
+| NLP | spaCy (skill extraction from resumes) |
+| Deploy | Vercel (frontend) + Render (backend) |
 
 ---
 
@@ -190,14 +269,18 @@ graph TD
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/ai/chat` | Process multimodal chat queries with context, images, GitHub URLs, and action payloads. |
-| `POST` | `/ai/auto-organize-tasks` | 1-Click Kanban sprint scheduler balancing weekly hour budgets. |
-| `POST` | `/ai/skill-gap` | Benchmark resume skills against target role or pasted Job Description. |
-| `POST` | `/ai/generate-subskills` | Decompose high-level skills into actionable subskill checklists. |
-| `POST` | `/ai/task-plan` | Prioritize and sequence tasks based on available study time. |
-| `POST` | `/ai/progress-insights` | Generate personalized coaching recommendations from activity logs. |
-| `POST` | `/api/students/profile` | Create/update user student profile in Firestore. |
-| `GET`  | `/api/career/roadmap` | Fetch active career learning roadmap for an authenticated user. |
+| `POST` | `/ai/chat` | Agentic chat with tool calling — returns actions + reply |
+| `POST` | `/ai/chat/stream` | SSE streaming version of chat — tokens arrive in real-time |
+| `POST` | `/ai/onboard` | Onboarding agent — auto-creates skills and tasks from profile |
+| `POST` | `/ai/auto-organize-tasks` | Kanban sprint scheduler balancing weekly hour budgets |
+| `POST` | `/ai/skill-gap` | Benchmark skills against a target role |
+| `POST` | `/ai/generate-subskills` | Decompose skills into actionable subskill checklists |
+| `POST` | `/ai/task-plan` | Prioritize and sequence tasks by available study time |
+| `POST` | `/ai/progress-insights` | Personalized coaching from activity data |
+| `POST` | `/api/v1/analyze-gap` | Resume upload + JD matching (PDF/DOCX/TXT) |
+| `POST` | `/api/v1/recommend/conversational-plan` | AI learning path generator |
+| `POST` | `/api/students/profile` | Create/update student profile |
+| `GET`  | `/api/career/roadmap` | Fetch active career roadmap |
 
 ---
 
@@ -226,13 +309,16 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-Create `backend/.env`:
+Create `backend/.env` (copy from `.env.example`):
 ```env
 PROJECT_NAME="LevelUP"
 ENV="development"
-MINIMAX_API_KEY="your-minimax-api-key"
-MINIMAX_BASE_URL="https://api.gmi-serving.com/v1"
-MINIMAX_MODEL="MiniMaxAI/MiniMax-M3"
+
+# NVIDIA NIM (free — get key at build.nvidia.com)
+OPENAI_API_KEY="nvapi-your-key-here"
+OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1"
+OPENAI_MODEL="nvidia/nemotron-3.5-lightning-30b-a3b"
+
 FIREBASE_SERVICE_ACCOUNT_PATH="firebase-service-account.json"
 ```
 

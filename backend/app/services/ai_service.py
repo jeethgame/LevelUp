@@ -1,98 +1,7 @@
 import json
-import os
-import re
 from typing import Any, Dict, List, Optional
-from dotenv import load_dotenv
 
-# Ensure environment variables from .env are loaded and take precedence
-load_dotenv(override=True)
-
-try:
-    from openai import AsyncAzureOpenAI, AsyncOpenAI
-except Exception:  # pragma: no cover - optional dependency path
-    AsyncAzureOpenAI = None
-    AsyncOpenAI = None
-
-
-
-def _client():
-    # 1. MiniMax / OpenAI-compatible configuration
-    api_key = os.getenv('MINIMAX_API_KEY') or os.getenv('OPENAI_API_KEY')
-    if api_key in ('your-api-key-here', 'mock-openai-key', ''):
-        api_key = os.getenv('MINIMAX_API_KEY')
-
-    base_url = os.getenv('MINIMAX_BASE_URL') or os.getenv('OPENAI_BASE_URL') or 'https://api.gmi-serving.com/v1'
-    model = os.getenv('MINIMAX_MODEL') or os.getenv('OPENAI_MODEL') or 'MiniMaxAI/MiniMax-M3'
-
-    if api_key and AsyncOpenAI is not None:
-        return {
-            'client': AsyncOpenAI(api_key=api_key, base_url=base_url),
-            'model': model,
-        }
-
-    # 2. Azure OpenAI fallback
-    if AsyncAzureOpenAI is not None:
-        azure_api_key = os.getenv('AZURE_OPENAI_API_KEY')
-        endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
-        api_version = os.getenv('AZURE_OPENAI_API_VERSION')
-        if azure_api_key and endpoint and api_version:
-            return {
-                'client': AsyncAzureOpenAI(
-                    api_key=azure_api_key,
-                    azure_endpoint=endpoint,
-                    api_version=api_version,
-                ),
-                'model': os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME', 'gpt-4o-mini'),
-            }
-
-    return None
-
-
-def _parse_llm_json(content: str) -> Optional[Dict[str, Any]]:
-    if not content:
-        return None
-    try:
-        return json.loads(content)
-    except Exception:
-        pass
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            pass
-    start = content.find('{')
-    end = content.rfind('}')
-    if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(content[start:end+1])
-        except Exception:
-            pass
-    return None
-
-
-async def _ask_ai(system_prompt: str, payload: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
-    client_info = _client()
-    if client_info is None:
-        return fallback
-
-    try:
-        response = await client_info['client'].chat.completions.create(
-            model=client_info['model'],
-            temperature=0.2,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': json.dumps(payload)},
-            ],
-        )
-        content = response.choices[0].message.content or ''
-        parsed = _parse_llm_json(content)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        return fallback
-
-    return fallback
+from app.services.llm_client import ask_ai
 
 
 def _make_subskills(skill_name: str) -> List[Dict[str, Any]]:
@@ -113,7 +22,7 @@ async def generate_subskills(payload: Dict[str, Any]) -> Dict[str, Any]:
         'source': 'fallback',
     }
     system_prompt = 'Return JSON with skillName and subskills array of {title, done} only.'
-    return await _ask_ai(system_prompt, payload, fallback)
+    return await ask_ai(system_prompt, payload, fallback)
 
 
 async def progress_insights(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -127,7 +36,7 @@ async def progress_insights(payload: Dict[str, Any]) -> Dict[str, Any]:
         'source': 'fallback',
     }
     system_prompt = 'Return JSON with title and suggestions array of short sentences.'
-    return await _ask_ai(system_prompt, payload, fallback)
+    return await ask_ai(system_prompt, payload, fallback)
 
 
 async def priority_suggestions(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -141,7 +50,7 @@ async def priority_suggestions(payload: Dict[str, Any]) -> Dict[str, Any]:
         })
     fallback = {'suggestions': suggestions, 'source': 'fallback'}
     system_prompt = 'Return JSON with suggestions array containing id, name, and priority.'
-    return await _ask_ai(system_prompt, payload, fallback)
+    return await ask_ai(system_prompt, payload, fallback)
 
 
 async def task_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -160,7 +69,7 @@ async def task_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         'source': 'fallback',
     }
     system_prompt = 'Return JSON with orderedTasks array containing id, title, skillId.'
-    return await _ask_ai(system_prompt, payload, fallback)
+    return await ask_ai(system_prompt, payload, fallback)
 
 
 async def skill_gap(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -189,7 +98,7 @@ async def skill_gap(payload: Dict[str, Any]) -> Dict[str, Any]:
         'source': 'fallback',
     }
     system_prompt = 'Return JSON with targetRole, missingSkills, and learningOrder arrays.'
-    return await _ask_ai(system_prompt, payload, fallback)
+    return await ask_ai(system_prompt, payload, fallback)
 
 
 async def path_optimize(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -200,7 +109,7 @@ async def path_optimize(payload: Dict[str, Any]) -> Dict[str, Any]:
         'source': 'fallback',
     }
     system_prompt = 'Return JSON with recommendedOrder array of skill names.'
-    return await _ask_ai(system_prompt, payload, fallback)
+    return await ask_ai(system_prompt, payload, fallback)
 
 
 async def time_estimate(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -212,7 +121,7 @@ async def time_estimate(payload: Dict[str, Any]) -> Dict[str, Any]:
         'source': 'fallback',
     }
     system_prompt = 'Return JSON with skillName and estimatedHours only.'
-    return await _ask_ai(system_prompt, payload, fallback)
+    return await ask_ai(system_prompt, payload, fallback)
 
 
 async def weekly_report(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -229,4 +138,4 @@ async def weekly_report(payload: Dict[str, Any]) -> Dict[str, Any]:
         'source': 'fallback',
     }
     system_prompt = 'Return JSON with done, missed, skillsProgressed, and improve array.'
-    return await _ask_ai(system_prompt, payload, fallback)
+    return await ask_ai(system_prompt, payload, fallback)

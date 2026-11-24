@@ -1,63 +1,9 @@
-import os
 import json
 import uuid
 import math
-import re
 from typing import Any, Dict, List, Optional
 
-try:
-    from openai import AsyncAzureOpenAI, AsyncOpenAI
-except Exception:
-    AsyncAzureOpenAI = None
-    AsyncOpenAI = None
-
-
-def _get_ai_client():
-    # 1. MiniMax / OpenAI-compatible endpoint
-    key = os.getenv("OPENAI_API_KEY") or os.getenv("MINIMAX_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("MINIMAX_BASE_URL") or "https://api.gmi-serving.com/v1"
-    model = os.getenv("OPENAI_MODEL") or os.getenv("MINIMAX_MODEL") or "MiniMaxAI/MiniMax-M3"
-
-    if key and AsyncOpenAI is not None:
-        return {
-            "client": AsyncOpenAI(api_key=key, base_url=base_url),
-            "model": model
-        }
-
-    # 2. Azure OpenAI fallback
-    if AsyncAzureOpenAI is not None:
-        azure_key = os.getenv("AZURE_OPENAI_API_KEY")
-        ep = os.getenv("AZURE_OPENAI_ENDPOINT")
-        ver = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
-        if azure_key and ep:
-            return {
-                "client": AsyncAzureOpenAI(api_key=azure_key, azure_endpoint=ep, api_version=ver),
-                "model": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
-            }
-    return None
-
-
-def _parse_llm_json(content: str) -> Optional[Dict[str, Any]]:
-    if not content:
-        return None
-    try:
-        return json.loads(content)
-    except Exception:
-        pass
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            pass
-    start = content.find('{')
-    end = content.rfind('}')
-    if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(content[start:end+1])
-        except Exception:
-            pass
-    return None
+from app.services.llm_client import get_client, parse_llm_json
 
 
 CURATED_CATALOG = {
@@ -226,7 +172,7 @@ Return ONLY valid JSON matching this schema:
 
 async def generate_conversational_learning_plan(goal: str, profile: Dict[str, Any]) -> Dict[str, Any]:
     fallback = _build_fallback_recommendation(goal, profile)
-    ai = _get_ai_client()
+    ai = get_client()
     if ai is None:
         return fallback
 
@@ -252,7 +198,7 @@ async def generate_conversational_learning_plan(goal: str, profile: Dict[str, An
             response_format={"type": "json_object"} if "gpt" in ai["model"] else None
         )
         content = response.choices[0].message.content or ""
-        parsed = _parse_llm_json(content)
+        parsed = parse_llm_json(content)
         if isinstance(parsed, dict) and "phases" in parsed:
             if not parsed.get("id"):
                 parsed["id"] = f"plan-{uuid.uuid4().hex[:8]}"
@@ -263,7 +209,7 @@ async def generate_conversational_learning_plan(goal: str, profile: Dict[str, An
 
 
 async def explain_recommendation_item(item_type: str, item_title: str, goal: str, learner_profile: Dict[str, Any]) -> Dict[str, Any]:
-    ai = _get_ai_client()
+    ai = get_client()
     fallback = {
         "item_title": item_title,
         "item_type": item_type,
@@ -287,7 +233,7 @@ async def explain_recommendation_item(item_type: str, item_title: str, goal: str
             ]
         )
         content = response.choices[0].message.content or ""
-        parsed = _parse_llm_json(content)
+        parsed = parse_llm_json(content)
         if isinstance(parsed, dict):
             return {**fallback, **parsed}
     except Exception:
@@ -311,7 +257,7 @@ async def adapt_learning_roadmap(current_roadmap: Dict[str, Any], feedback_type:
         current_roadmap["weeks_to_readiness"] = max(2, math.ceil(current_roadmap["total_estimated_hours"] / max(1, current_roadmap.get("weekly_hours", 10))))
         return {"roadmap": current_roadmap, "change_summary": "Roadmap accelerated! Streamlined theoretical milestones to focus on capstones."}
 
-    ai = _get_ai_client()
+    ai = get_client()
     if ai is None:
         return {"roadmap": current_roadmap, "change_summary": f"Roadmap adapted for {feedback_type}."}
 
@@ -327,7 +273,7 @@ async def adapt_learning_roadmap(current_roadmap: Dict[str, Any], feedback_type:
             ]
         )
         content = res.choices[0].message.content or ""
-        parsed = _parse_llm_json(content)
+        parsed = parse_llm_json(content)
         if isinstance(parsed, dict) and "phases" in parsed:
             summary = parsed.pop("change_summary", "Roadmap recalibrated successfully.")
             return {"roadmap": parsed, "change_summary": summary}
@@ -338,7 +284,7 @@ async def adapt_learning_roadmap(current_roadmap: Dict[str, Any], feedback_type:
 async def milestone_ai_chat(milestone_context: Dict[str, Any], chat_history: List[Dict[str, str]], user_query: str) -> Dict[str, Any]:
     skills_text = ", ".join(milestone_context.get("skills", ["required skills"]))
     default_reply = f"For milestone **{milestone_context.get('title', 'this milestone')}**, focus first on {skills_text}. Break the problem down into small testable units."
-    ai = _get_ai_client()
+    ai = get_client()
     if ai is None:
         return {"reply": default_reply, "suggestions": ["Give me a starter code template", "What are the common pitfalls?", "How can I test this?"]}
 
@@ -351,7 +297,7 @@ async def milestone_ai_chat(milestone_context: Dict[str, Any], chat_history: Lis
     try:
         res = await ai["client"].chat.completions.create(model=ai["model"], temperature=0.4, messages=msgs)
         content = res.choices[0].message.content or ""
-        parsed = _parse_llm_json(content)
+        parsed = parse_llm_json(content)
         if isinstance(parsed, dict) and "reply" in parsed:
             return parsed
     except Exception:
@@ -387,7 +333,7 @@ async def generate_diagnostic_quiz(skill_name: str, difficulty: str = "intermedi
             }
         ]
     }
-    ai = _get_ai_client()
+    ai = get_client()
     if ai is None:
         return fallback
 
@@ -395,7 +341,7 @@ async def generate_diagnostic_quiz(skill_name: str, difficulty: str = "intermedi
     try:
         res = await ai["client"].chat.completions.create(model=ai["model"], temperature=0.2, messages=[{"role": "system", "content": "You are a technical interviewer. Output JSON only."}, {"role": "user", "content": prompt}])
         content = res.choices[0].message.content or ""
-        parsed = _parse_llm_json(content)
+        parsed = parse_llm_json(content)
         if isinstance(parsed, dict) and "questions" in parsed:
             return parsed
     except Exception:
@@ -421,7 +367,7 @@ async def generate_project_spec(domain: str, milestone_title: str, skills: List[
         "starter_boilerplate_code": "# main.py\nfrom fastapi import FastAPI\n\napp = FastAPI(title='" + domain.replace(" ", "_") + "_service')\n\n@app.get('/health')\ndef health():\n    return {'status': 'healthy', 'version': '1.0.0'}\n",
         "evaluation_criteria": ["Clean architecture & separation of concerns", "Comprehensive error handling", "Working documentation & tests"]
     }
-    ai = _get_ai_client()
+    ai = get_client()
     if ai is None:
         return fallback
 
@@ -429,7 +375,7 @@ async def generate_project_spec(domain: str, milestone_title: str, skills: List[
     try:
         res = await ai["client"].chat.completions.create(model=ai["model"], temperature=0.4, messages=[{"role": "system", "content": "You are a software architect. Output JSON only."}, {"role": "user", "content": prompt}])
         content = res.choices[0].message.content or ""
-        parsed = _parse_llm_json(content)
+        parsed = parse_llm_json(content)
         if isinstance(parsed, dict) and "project_title" in parsed:
             return parsed
     except Exception:
@@ -447,7 +393,7 @@ async def validate_checkpoint_submission(milestone_title: str, checkpoint_goal: 
         "areas_for_improvement": ["Add more edge-case validation", "Include automated unit tests"],
         "badges_unlocked": ["Checkpoint Crusher", "Fast Learner"]
     }
-    ai = _get_ai_client()
+    ai = get_client()
     if ai is None:
         return fallback
 
@@ -458,7 +404,7 @@ Return JSON: {{"passed": true, "score": 90, "grade": "Proficient", "feedback": "
     try:
         res = await ai["client"].chat.completions.create(model=ai["model"], temperature=0.2, messages=[{"role": "system", "content": "You are an encouraging code reviewer. Output JSON only."}, {"role": "user", "content": prompt}])
         content = res.choices[0].message.content or ""
-        parsed = _parse_llm_json(content)
+        parsed = parse_llm_json(content)
         if isinstance(parsed, dict) and "score" in parsed:
             return parsed
     except Exception:

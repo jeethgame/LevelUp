@@ -3,78 +3,173 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 import urllib.request
-from app.services.ai_service import _client, _parse_llm_json
+from app.services.llm_client import get_client, parse_llm_json
 
-CHAT_SYSTEM_PROMPT = """You are LevelUP AI Assistant — an expert, proactive career coach, coding mentor, and system design reviewer embedded directly inside the LevelUP application.
+CHAT_SYSTEM_PROMPT = """You are LevelUP AI Assistant — an expert career coach, coding mentor, and system design reviewer.
 
-You have direct access to the user's current learning context:
-- Tracked skills & categories
-- 3-column task board (To Do, Current, Past) with priorities and deadlines
-- Active career roadmaps & target role goals
+You have access to the user's learning context (skills, tasks, roadmaps) provided below.
 
-Your superpowers:
-1. **1-on-1 Voice & Text Mentorship**: Provide concise, encouraging, and accurate advice on coding, DSA, system design, and career progression.
-2. **Autonomous Task & Skill Actions**: If the user asks or implies creating, updating, moving, or deleting tasks or skills, generate the corresponding structured ACTIONS in your JSON response so the app executes them automatically!
-3. **Multimodal Vision & GitHub Inspection**: When the user provides an image (architecture diagram, database schema, whiteboard drawing) or a GitHub repository link, analyze the engineering architecture, identify missing best practices or gaps, and propose actionable skills and tasks to master.
-
-You MUST always reply with a valid JSON object matching this schema:
-{
-  "reply": "Your friendly, clear markdown response directly answering the user...",
-  "actions": [
-    {
-      "type": "CREATE_TASK" | "UPDATE_TASK_STATUS" | "UPDATE_TASK_PRIORITY" | "DELETE_TASK" | "CREATE_SKILL" | "UPDATE_SKILL_PROGRESS" | "ADD_SUBSKILLS",
-      "data": {
-        // for CREATE_TASK:
-        "title": "string (required)",
-        "priority": "HIGH" | "MEDIUM" | "LOW",
-        "status": "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED",
-        "deadline": "YYYY-MM-DDTHH:MM:SS or null",
-        "notes": "string or empty"
-
-        // for UPDATE_TASK_STATUS:
-        "taskId": "string (or match by title)",
-        "taskTitle": "string",
-        "status": "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED"
-
-        // for UPDATE_TASK_PRIORITY:
-        "taskId": "string (or match by title)",
-        "taskTitle": "string",
-        "priority": "HIGH" | "MEDIUM" | "LOW"
-
-        // for DELETE_TASK:
-        "taskId": "string (or match by title)",
-        "taskTitle": "string"
-
-        // for CREATE_SKILL:
-        "title": "string",
-        "categoryName": "string",
-        "priority": "HIGH" | "MEDIUM" | "LOW",
-        "progress": 0
-
-        // for UPDATE_SKILL_PROGRESS:
-        "skillId": "string (or match by title)",
-        "skillName": "string",
-        "progress": number (0 to 100)
-
-        // for ADD_SUBSKILLS:
-        "skillId": "string (or match by title)",
-        "skillName": "string",
-        "subskills": ["Subskill 1", "Subskill 2"]
-      }
-    }
-  ],
-  "suggestedFollowUps": [
-    "Short question 1 the user might ask next",
-    "Short question 2",
-    "Short question 3"
-  ]
-}
+Your capabilities:
+1. **Mentorship**: Concise, encouraging advice on coding, DSA, system design, and career growth.
+2. **Workspace Actions**: Use the provided tools to create/update/delete tasks and skills when the user asks. You can chain multiple tool calls in one turn.
+3. **Vision & GitHub**: Analyze architecture diagrams, code screenshots, and GitHub repos.
 
 Guidelines:
-- If no data modifications are requested, "actions" MUST be an empty array [].
-- Never hallucinate tasks that don't exist when updating. Use the tasks provided in the context to match task titles or IDs.
-- Keep the tone encouraging, technical yet accessible, and structured with clean markdown bullets where helpful.
+- Use markdown formatting in your replies (bullets, bold, code blocks).
+- When updating tasks/skills, match by title from the context provided.
+- Be encouraging, technical yet accessible.
+- After answering, suggest 2-3 follow-up questions the user might ask.
 """
+
+AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_task",
+            "description": "Create a new task on the user's Kanban board",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Task title"},
+                    "priority": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"], "description": "Task priority"},
+                    "status": {"type": "string", "enum": ["NOT_STARTED", "IN_PROGRESS", "COMPLETED"], "description": "Initial status"},
+                    "deadline": {"type": "string", "description": "Deadline in YYYY-MM-DDTHH:MM:SS format, or null"},
+                    "notes": {"type": "string", "description": "Optional notes"},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_task_status",
+            "description": "Move a task to a different status column (To Do, In Progress, Completed)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_title": {"type": "string", "description": "Title of the task to update"},
+                    "status": {"type": "string", "enum": ["NOT_STARTED", "IN_PROGRESS", "COMPLETED"]},
+                },
+                "required": ["task_title", "status"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_task_priority",
+            "description": "Change a task's priority level",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_title": {"type": "string", "description": "Title of the task to update"},
+                    "priority": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+                },
+                "required": ["task_title", "priority"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_task",
+            "description": "Delete a task from the board",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_title": {"type": "string", "description": "Title of the task to delete"},
+                },
+                "required": ["task_title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_skill",
+            "description": "Add a new skill to the user's portfolio",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Skill name"},
+                    "category_name": {"type": "string", "description": "Category to file the skill under"},
+                    "priority": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_skill_progress",
+            "description": "Update a skill's progress percentage",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_name": {"type": "string", "description": "Name of the skill"},
+                    "progress": {"type": "integer", "minimum": 0, "maximum": 100, "description": "New progress value"},
+                },
+                "required": ["skill_name", "progress"],
+            },
+        },
+    },
+]
+
+# Maps tool call names to the action format the frontend already understands
+def _tool_call_to_action(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    if name == "create_task":
+        return {
+            "type": "CREATE_TASK",
+            "data": {
+                "title": args.get("title", ""),
+                "priority": args.get("priority", "MEDIUM"),
+                "status": args.get("status", "NOT_STARTED"),
+                "deadline": args.get("deadline"),
+                "notes": args.get("notes", ""),
+            },
+        }
+    if name == "update_task_status":
+        return {
+            "type": "UPDATE_TASK_STATUS",
+            "data": {
+                "taskTitle": args.get("task_title", ""),
+                "status": args.get("status", "IN_PROGRESS"),
+            },
+        }
+    if name == "update_task_priority":
+        return {
+            "type": "UPDATE_TASK_PRIORITY",
+            "data": {
+                "taskTitle": args.get("task_title", ""),
+                "priority": args.get("priority", "MEDIUM"),
+            },
+        }
+    if name == "delete_task":
+        return {
+            "type": "DELETE_TASK",
+            "data": {"taskTitle": args.get("task_title", "")},
+        }
+    if name == "create_skill":
+        return {
+            "type": "CREATE_SKILL",
+            "data": {
+                "title": args.get("title", ""),
+                "categoryName": args.get("category_name", "General"),
+                "priority": args.get("priority", "MEDIUM"),
+                "progress": 0,
+            },
+        }
+    if name == "update_skill_progress":
+        return {
+            "type": "UPDATE_SKILL_PROGRESS",
+            "data": {
+                "skillName": args.get("skill_name", ""),
+                "progress": args.get("progress", 0),
+            },
+        }
+    return {"type": name.upper(), "data": args}
 
 def _fetch_github_repo_summary(url: str) -> Optional[str]:
     """Extract owner/repo and fetch public repository metadata."""
@@ -155,83 +250,120 @@ def _smart_fallback_response(query: str, context: Dict[str, Any]) -> Dict[str, A
     }
 
 
+def _build_llm_messages(
+    messages: List[Dict[str, Any]],
+    context: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    context_str = json.dumps(context, indent=2)
+    system = f"{CHAT_SYSTEM_PROMPT}\n\n### Current User Context:\n{context_str}\n"
+    llm_messages = [{"role": "system", "content": system}]
+    for m in messages[-10:]:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        image = m.get("image")
+        if role == "user" and image:
+            llm_messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": content or "Please inspect and analyze this image:"},
+                    {"type": "image_url", "image_url": {"url": image}},
+                ],
+            })
+        else:
+            llm_messages.append({"role": role, "content": content})
+    return llm_messages
+
+
 async def process_chat_message(
     messages: List[Dict[str, Any]],
-    context: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    client_info = _client()
+    client_info = get_client()
     context = context or {}
     last_user_query = ""
-    last_image = None
 
     for m in reversed(messages):
-        if m.get('role') == 'user':
-            # Normalize to str — content may be None/non-string (Fix: prevent TypeError)
-            raw = m.get('content', '')
-            last_user_query = raw if isinstance(raw, str) else ''
-            last_image = m.get('image')
+        if m.get("role") == "user":
+            raw = m.get("content", "")
+            last_user_query = raw if isinstance(raw, str) else ""
             break
 
-    # Check for GitHub URLs in user query — run in thread to avoid blocking event loop
-    github_info = None
+    # GitHub URL enrichment
     if "github.com/" in last_user_query:
         import asyncio
         github_info = await asyncio.to_thread(_fetch_github_repo_summary, last_user_query)
         if github_info:
-            context['githubInspection'] = github_info
+            context["githubInspection"] = github_info
 
-    # Format context into system prompt
-    context_str = json.dumps(context, indent=2)
-    augmented_system_prompt = f"{CHAT_SYSTEM_PROMPT}\n\n### Current User Context:\n{context_str}\n"
+    if client_info is None:
+        return _smart_fallback_response(last_user_query, context)
 
-    if client_info is not None:
-        try:
-            llm_messages = [{'role': 'system', 'content': augmented_system_prompt}]
-            for m in messages[-10:]:
-                role = m.get('role', 'user')
-                content = m.get('content', '')
-                image = m.get('image')
+    llm_messages = _build_llm_messages(messages, context)
+    collected_actions: List[Dict[str, Any]] = []
 
-                if role == 'user' and image:
+    try:
+        # Agent loop — up to 5 iterations of tool calling
+        for _iteration in range(5):
+            try:
+                response = await client_info["client"].chat.completions.create(
+                    model=client_info["model"],
+                    temperature=0.4,
+                    messages=llm_messages,
+                    tools=AGENT_TOOLS,
+                    tool_choice="auto",
+                )
+            except Exception:
+                # Model may not support tools param — fall back to no-tools call
+                response = await client_info["client"].chat.completions.create(
+                    model=client_info["model"],
+                    temperature=0.4,
+                    messages=llm_messages,
+                )
+
+            choice = response.choices[0]
+            msg = choice.message
+
+            # If the model made tool calls, collect them and feed results back
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                llm_messages.append(msg)
+                for tc in msg.tool_calls:
+                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+                    action = _tool_call_to_action(tc.function.name, args)
+                    collected_actions.append(action)
                     llm_messages.append({
-                        'role': 'user',
-                        'content': [
-                            {'type': 'text', 'text': content or 'Please inspect and analyze this architecture diagram / whiteboard drawing:'},
-                            {'type': 'image_url', 'image_url': {'url': image}}
-                        ]
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"status": "queued", "action": action["type"], "details": action["data"]}),
                     })
-                else:
-                    llm_messages.append({
-                        'role': role,
-                        'content': content
-                    })
+                continue
 
-            response = await client_info['client'].chat.completions.create(
-                model=client_info['model'],
-                temperature=0.4,
-                messages=llm_messages,
-            )
+            # Text response — we're done
+            content = msg.content or ""
 
-            content = response.choices[0].message.content or ''
-            parsed = _parse_llm_json(content)
+            # Try parsing as the old JSON format for backward compat with prompt-based models
+            parsed = parse_llm_json(content)
             if isinstance(parsed, dict) and "reply" in parsed:
-                if "actions" not in parsed or not isinstance(parsed["actions"], list):
-                    parsed["actions"] = []
-                if "suggestedFollowUps" not in parsed or not isinstance(parsed["suggestedFollowUps"], list):
-                    parsed["suggestedFollowUps"] = []
-                return parsed
-            elif content.strip():
+                old_actions = parsed.get("actions", [])
+                if isinstance(old_actions, list):
+                    collected_actions.extend(old_actions)
                 return {
-                    "reply": content.strip(),
-                    "actions": [],
-                    "suggestedFollowUps": [
-                        "Tell me more",
-                        "Add this as a task",
-                        "How do I practice this?"
-                    ]
+                    "reply": parsed["reply"],
+                    "actions": collected_actions,
+                    "suggestedFollowUps": parsed.get("suggestedFollowUps", []),
                 }
-        except Exception as e:
-            print(f"Chat agent LLM call error: {e}")
+
+            return {
+                "reply": content.strip() or "Here's what I found for you!",
+                "actions": collected_actions,
+                "suggestedFollowUps": [
+                    "Tell me more",
+                    "Add this as a task",
+                    "How do I practice this?",
+                ],
+            }
+
+    except Exception as e:
+        print(f"Chat agent error: {e}")
 
     return _smart_fallback_response(last_user_query, context)
 
@@ -242,7 +374,7 @@ async def auto_organize_tasks(
     context: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Analyzes user's Kanban task board and reorganizes it into an optimal sprint schedule."""
-    client_info = _client()
+    client_info = get_client()
     context = context or {}
 
     prompt = f"""You are the LevelUP AI Task & Kanban Auto-Scheduler.
@@ -293,7 +425,7 @@ You MUST reply with a valid JSON object matching this schema:
                 ]
             )
             content = response.choices[0].message.content or ''
-            parsed = _parse_llm_json(content)
+            parsed = parse_llm_json(content)
             if isinstance(parsed, dict) and "moves" in parsed:
                 return parsed
         except Exception as e:
@@ -334,5 +466,225 @@ You MUST reply with a valid JSON object matching this schema:
         "moves": moves,
         "todaySprintHours": budgeted_hours,
         "suggestedNewTasks": []
+    }
+
+
+async def stream_chat_response(
+    messages: List[Dict[str, Any]],
+    context: Optional[Dict[str, Any]] = None,
+):
+    """Async generator yielding SSE events for streaming chat responses."""
+    client_info = get_client()
+    context = context or {}
+    last_user_query = ""
+
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            raw = m.get("content", "")
+            last_user_query = raw if isinstance(raw, str) else ""
+            break
+
+    if "github.com/" in last_user_query:
+        import asyncio
+        github_info = await asyncio.to_thread(_fetch_github_repo_summary, last_user_query)
+        if github_info:
+            context["githubInspection"] = github_info
+
+    def _sse(data: Dict[str, Any]) -> str:
+        return f"data: {json.dumps(data)}\n\n"
+
+    if client_info is None:
+        fallback = _smart_fallback_response(last_user_query, context)
+        yield _sse({"type": "token", "content": fallback["reply"]})
+        yield _sse({"type": "done", "actions": fallback["actions"], "suggestedFollowUps": fallback["suggestedFollowUps"]})
+        return
+
+    llm_messages = _build_llm_messages(messages, context)
+    collected_actions: List[Dict[str, Any]] = []
+
+    try:
+        # Agent loop with streaming on the final text response
+        for _iteration in range(5):
+            # Non-streaming call for tool-calling iterations
+            try:
+                response = await client_info["client"].chat.completions.create(
+                    model=client_info["model"],
+                    temperature=0.4,
+                    messages=llm_messages,
+                    tools=AGENT_TOOLS,
+                    tool_choice="auto",
+                )
+            except Exception:
+                response = await client_info["client"].chat.completions.create(
+                    model=client_info["model"],
+                    temperature=0.4,
+                    messages=llm_messages,
+                )
+
+            choice = response.choices[0]
+            msg = choice.message
+
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                llm_messages.append(msg)
+                for tc in msg.tool_calls:
+                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+                    action = _tool_call_to_action(tc.function.name, args)
+                    collected_actions.append(action)
+                    yield _sse({"type": "tool_call", "action": action})
+                    llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"status": "queued", "action": action["type"], "details": action["data"]}),
+                    })
+                continue
+
+            # Final iteration — stream the text response
+            try:
+                stream = await client_info["client"].chat.completions.create(
+                    model=client_info["model"],
+                    temperature=0.4,
+                    messages=llm_messages,
+                    stream=True,
+                )
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta and delta.content:
+                        yield _sse({"type": "token", "content": delta.content})
+            except Exception:
+                # Streaming not supported — send the already-fetched content as one chunk
+                content = msg.content or ""
+                if content.strip():
+                    yield _sse({"type": "token", "content": content})
+
+            yield _sse({"type": "done", "actions": collected_actions, "suggestedFollowUps": ["Tell me more", "Add this as a task", "How do I practice this?"]})
+            return
+
+    except Exception as e:
+        print(f"Stream chat error: {e}")
+        fallback = _smart_fallback_response(last_user_query, context)
+        yield _sse({"type": "token", "content": fallback["reply"]})
+        yield _sse({"type": "done", "actions": fallback["actions"], "suggestedFollowUps": fallback["suggestedFollowUps"]})
+
+
+ONBOARDING_SYSTEM_PROMPT = """You are the LevelUP onboarding agent. A new user just finished profile setup.
+
+Based on their profile, use the provided tools to set up their workspace:
+1. Create 3-5 skills they should track (based on their listed skills and career goal)
+2. Create 1 task per skill — the first concrete learning step
+3. Keep priorities realistic: 1-2 HIGH, rest MEDIUM
+
+After calling the tools, write a short welcome message summarizing what you set up.
+Be encouraging but concise — 3-4 sentences max."""
+
+
+async def run_onboarding_agent(profile: Dict[str, Any]) -> Dict[str, Any]:
+    client_info = get_client()
+    if client_info is None:
+        return _onboarding_fallback(profile)
+
+    skills_str = profile.get("skills", "")
+    if isinstance(skills_str, list):
+        skills_str = ", ".join(skills_str)
+    interests = profile.get("interests", "")
+    if isinstance(interests, list):
+        interests = ", ".join(interests)
+
+    user_msg = json.dumps({
+        "name": profile.get("name", ""),
+        "education": profile.get("education", ""),
+        "skills": skills_str,
+        "interests": interests,
+        "goals": profile.get("goals", ""),
+        "experience": profile.get("experience", ""),
+    })
+
+    llm_messages = [
+        {"role": "system", "content": ONBOARDING_SYSTEM_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+    collected_actions: List[Dict[str, Any]] = []
+
+    try:
+        for _iteration in range(5):
+            try:
+                response = await client_info["client"].chat.completions.create(
+                    model=client_info["model"],
+                    temperature=0.3,
+                    messages=llm_messages,
+                    tools=AGENT_TOOLS,
+                    tool_choice="auto",
+                )
+            except Exception:
+                response = await client_info["client"].chat.completions.create(
+                    model=client_info["model"],
+                    temperature=0.3,
+                    messages=llm_messages,
+                )
+
+            choice = response.choices[0]
+            msg = choice.message
+
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                llm_messages.append(msg)
+                for tc in msg.tool_calls:
+                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+                    action = _tool_call_to_action(tc.function.name, args)
+                    collected_actions.append(action)
+                    llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps({"status": "queued", "action": action["type"], "details": action["data"]}),
+                    })
+                continue
+
+            content = msg.content or ""
+            parsed = parse_llm_json(content)
+            reply = parsed.get("reply", content) if isinstance(parsed, dict) else content
+
+            return {
+                "reply": reply.strip() or "Welcome to LevelUP! I've set up your workspace.",
+                "actions": collected_actions,
+            }
+
+    except Exception as e:
+        print(f"Onboarding agent error: {e}")
+
+    return _onboarding_fallback(profile)
+
+
+def _onboarding_fallback(profile: Dict[str, Any]) -> Dict[str, Any]:
+    skills_raw = profile.get("skills", "")
+    if isinstance(skills_raw, str):
+        skill_list = [s.strip() for s in skills_raw.split(",") if s.strip()]
+    else:
+        skill_list = list(skills_raw) if skills_raw else []
+
+    goal = profile.get("goals", "Software Engineer")
+    actions = []
+
+    for i, skill_name in enumerate(skill_list[:5]):
+        actions.append({
+            "type": "CREATE_SKILL",
+            "data": {
+                "title": skill_name,
+                "categoryName": "From Profile",
+                "priority": "HIGH" if i < 2 else "MEDIUM",
+                "progress": 0,
+            },
+        })
+        actions.append({
+            "type": "CREATE_TASK",
+            "data": {
+                "title": f"Start learning {skill_name}: complete a beginner tutorial",
+                "priority": "HIGH" if i < 2 else "MEDIUM",
+                "status": "NOT_STARTED",
+                "deadline": None,
+                "notes": f"First step toward mastering {skill_name} for your {goal} goal.",
+            },
+        })
+
+    return {
+        "reply": f"Welcome to LevelUP! I've added {len(skill_list[:5])} skills from your profile and created a learning task for each. Head to your Dashboard to get started!",
+        "actions": actions,
     }
 

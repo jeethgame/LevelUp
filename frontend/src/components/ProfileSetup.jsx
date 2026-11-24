@@ -34,6 +34,10 @@ import {
   Code2,
   Zap
 } from 'lucide-react';
+import { runOnboarding } from '../services/aiService';
+import { useSkills } from '../contexts/SkillContext';
+import { useTasks } from '../contexts/TaskContext';
+import { useGoals } from '../contexts/GoalContext';
 
 // Predefined options
 const EDUCATION_LEVELS = [
@@ -135,6 +139,9 @@ const ProfileSetup = () => {
   const [customInterest, setCustomInterest] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const navigate = useNavigate();
+  const { createSkill } = useSkills();
+  const { createTask } = useTasks();
+  const { addGoal } = useGoals();
 
   const steps = [
     { title: 'Basic Info', description: 'Tell us about yourself' },
@@ -226,6 +233,25 @@ const ProfileSetup = () => {
           }
         }
       );
+
+      // Run onboarding agent to auto-create skills, tasks, and goal
+      try {
+        const onboardResult = await runOnboarding(profileData);
+        if (onboardResult?.actions) {
+          for (const act of onboardResult.actions) {
+            try {
+              if (act.type === 'CREATE_SKILL' && act.data?.title) {
+                await createSkill({ name: act.data.title, category: act.data.categoryName || 'General', priority: act.data.priority || 'MEDIUM', status: 'NOT_STARTED', progress: 0 });
+              } else if (act.type === 'CREATE_TASK' && act.data?.title) {
+                await createTask({ title: act.data.title, priority: act.data.priority || 'MEDIUM', status: act.data.status || 'NOT_STARTED', deadline: act.data.deadline || '', notes: act.data.notes || '' });
+              }
+            } catch (e) { console.warn('Onboarding action failed:', e); }
+          }
+        }
+        if (formData.goals) {
+          await addGoal({ title: formData.goals, targetRole: formData.goals, status: 'ACTIVE' });
+        }
+      } catch (e) { console.warn('Onboarding agent error (non-blocking):', e); }
 
       navigate('/dashboard');
     } catch (error) {

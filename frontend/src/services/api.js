@@ -560,3 +560,93 @@ export const updateActiveRoadmap = async (data, userId) => {
     return false
   }
 }
+
+// ── Goals CRUD ─────────────────────────────────────────────────────────────
+
+const normalizeGoalDoc = (d) => ({
+  ...d,
+  title: d.title || '',
+  targetRole: d.targetRole || '',
+  status: d.status || 'ACTIVE',
+  deadline: d.deadline || '',
+  notes: d.notes || '',
+})
+
+export const listGoals = async (userId) => {
+  const uid = ensureUserId(userId)
+  const snapshot = await getDocs(getUserCollection(uid, 'goals'))
+  return mapDocs(snapshot).map(normalizeGoalDoc)
+}
+
+export const createGoal = async (goal, userId) => {
+  const uid = ensureUserId(userId)
+  const payload = normalizeItem({
+    title: (goal.title || '').trim(),
+    targetRole: (goal.targetRole || '').trim(),
+    status: goal.status || 'ACTIVE',
+    deadline: goal.deadline || '',
+    notes: goal.notes || '',
+    milestones: Array.isArray(goal.milestones) ? goal.milestones : [],
+    userId: uid,
+  })
+  const ref = await addDoc(getUserCollection(uid, 'goals'), payload)
+  return normalizeGoalDoc({ id: ref.id, ...payload })
+}
+
+export const updateGoal = async (goalId, goal, userId) => {
+  const uid = ensureUserId(userId)
+  const payload = {
+    title: (goal.title || '').trim(),
+    targetRole: (goal.targetRole || '').trim(),
+    status: goal.status || 'ACTIVE',
+    deadline: goal.deadline || '',
+    notes: goal.notes || '',
+    milestones: Array.isArray(goal.milestones) ? goal.milestones : [],
+    updatedAt: nowIso(),
+  }
+  await updateDoc(doc(db, 'users', uid, 'goals', goalId), payload)
+  return normalizeGoalDoc({ id: goalId, ...payload })
+}
+
+export const deleteGoal = async (goalId, userId) => {
+  const uid = ensureUserId(userId)
+  await deleteDoc(doc(db, 'users', uid, 'goals', goalId))
+  return true
+}
+
+// ── Chat History ───────────────────────────────────────────────────────────
+
+export const loadChatHistory = async (userId) => {
+  const uid = ensureUserId(userId)
+  try {
+    const ref = doc(db, 'users', uid, 'chat_history', 'messages')
+    const snap = await getDoc(ref)
+    if (snap.exists()) {
+      const data = snap.data()
+      return Array.isArray(data.messages) ? data.messages : []
+    }
+  } catch (err) {
+    console.warn('Failed to load chat history:', err)
+  }
+  return []
+}
+
+export const saveChatHistory = async (messages, userId) => {
+  const uid = ensureUserId(userId)
+  try {
+    const ref = doc(db, 'users', uid, 'chat_history', 'messages')
+    const trimmed = (messages || []).slice(-50).map(m => ({
+      id: m.id,
+      role: m.role,
+      content: m.content || '',
+      suggestedFollowUps: m.suggestedFollowUps || [],
+      pendingActions: [],
+      actionsExecuted: m.actionsExecuted || [],
+    }))
+    await setDoc(ref, { messages: trimmed, updatedAt: nowIso() })
+    return true
+  } catch (err) {
+    console.warn('Failed to save chat history:', err)
+    return false
+  }
+}

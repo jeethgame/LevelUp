@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
@@ -12,7 +13,7 @@ from app.services.ai_service import (
     time_estimate,
     weekly_report,
 )
-from app.services.chat_agent import process_chat_message, auto_organize_tasks
+from app.services.chat_agent import process_chat_message, auto_organize_tasks, stream_chat_response, run_onboarding_agent
 from app.utils.auth import get_optional_firebase_token
 
 router = APIRouter(prefix='/ai', tags=['AI'])
@@ -122,8 +123,32 @@ async def route_chat(body: ChatRequest, user_id: Optional[str] = Depends(get_opt
     return {**result, 'userId': user_id or 'guest_user'}
 
 
+@router.post('/chat/stream')
+async def route_chat_stream(body: ChatRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
+    return StreamingResponse(
+        stream_chat_response(body.messages, body.context),
+        media_type='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
 @router.post('/auto-organize-tasks')
 async def route_auto_organize_tasks(body: AutoOrganizeTasksRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
     result = await auto_organize_tasks(body.tasks, body.hoursBudget, body.context)
+    return {**result, 'userId': user_id or 'guest_user'}
+
+
+class OnboardingRequest(BaseModel):
+    name: Optional[str] = ''
+    education: Optional[str] = ''
+    skills: Optional[str] = ''
+    interests: Optional[str] = ''
+    goals: Optional[str] = ''
+    experience: Optional[str] = ''
+
+
+@router.post('/onboard')
+async def route_onboard(body: OnboardingRequest, user_id: Optional[str] = Depends(get_optional_firebase_token)):
+    result = await run_onboarding_agent(body.dict())
     return {**result, 'userId': user_id or 'guest_user'}
 

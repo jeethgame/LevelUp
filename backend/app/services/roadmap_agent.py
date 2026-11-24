@@ -1,67 +1,7 @@
-import os
 import json
-import re
 from typing import Any, Dict, List, Optional
 
-try:
-  from openai import AsyncAzureOpenAI, AsyncOpenAI
-except Exception:  # pragma: no cover - optional dependency path
-  AsyncAzureOpenAI = None
-  AsyncOpenAI = None
-
-
-def _client():
-  # 1. MiniMax / OpenAI-compatible configuration
-  openai_api_key = os.getenv('OPENAI_API_KEY') or os.getenv('MINIMAX_API_KEY')
-  base_url = os.getenv('OPENAI_BASE_URL') or os.getenv('MINIMAX_BASE_URL') or 'https://api.gmi-serving.com/v1'
-  model = os.getenv('OPENAI_MODEL') or os.getenv('MINIMAX_MODEL') or 'MiniMaxAI/MiniMax-M3'
-
-  if openai_api_key and AsyncOpenAI is not None:
-    return {
-      'client': AsyncOpenAI(api_key=openai_api_key, base_url=base_url),
-      'model': model,
-    }
-
-  # 2. Azure OpenAI fallback
-  if AsyncAzureOpenAI is not None:
-    api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-
-    if api_key and endpoint and api_version:
-      return {
-        'client': AsyncAzureOpenAI(
-          api_key=api_key,
-          azure_endpoint=endpoint,
-          api_version=api_version,
-        ),
-        'model': os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini"),
-      }
-
-  return None
-
-
-def _parse_llm_json(content: str) -> Optional[Dict[str, Any]]:
-  if not content:
-    return None
-  try:
-    return json.loads(content)
-  except Exception:
-    pass
-  match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
-  if match:
-    try:
-      return json.loads(match.group(1))
-    except Exception:
-      pass
-  start = content.find('{')
-  end = content.rfind('}')
-  if start != -1 and end != -1 and end > start:
-    try:
-      return json.loads(content[start:end+1])
-    except Exception:
-      pass
-  return None
+from app.services.llm_client import get_client, parse_llm_json
 
 
 def _fallback_roadmap(profile: Dict[str, Any]) -> Dict[str, Any]:
@@ -179,7 +119,7 @@ Return ONLY valid JSON in this exact format:
 """
 
 async def generate_roadmap(profile: dict) -> dict:
-  client_info = _client()
+  client_info = get_client()
   if client_info is None:
     return _fallback_roadmap(profile)
 
@@ -194,7 +134,7 @@ async def generate_roadmap(profile: dict) -> dict:
     )
 
     content = response.choices[0].message.content or ""
-    parsed = _parse_llm_json(content)
+    parsed = parse_llm_json(content)
     if isinstance(parsed, dict) and "career_decision" in parsed:
       return parsed
     return _fallback_roadmap(profile)
@@ -232,7 +172,7 @@ Return ONLY valid JSON for the new "learning_roadmap" part:
 """
 
 async def adapt_roadmap(current_data: dict) -> dict:
-  client_info = _client()
+  client_info = get_client()
   if client_info is None:
     return current_data.get("learning_roadmap")
 
@@ -252,7 +192,7 @@ async def adapt_roadmap(current_data: dict) -> dict:
     )
 
     content = response.choices[0].message.content or ""
-    parsed = _parse_llm_json(content)
+    parsed = parse_llm_json(content)
     if isinstance(parsed, dict):
       return parsed
     return current_data.get("learning_roadmap")

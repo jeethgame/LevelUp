@@ -7,6 +7,7 @@ import { ToastProvider } from './contexts/ToastContext.jsx'
 import { SkillProvider } from './contexts/SkillContext.jsx'
 import { TaskProvider } from './contexts/TaskContext.jsx'
 import { RoadmapProvider } from './contexts/RoadmapContext.jsx'
+import { GoalProvider } from './contexts/GoalContext.jsx'
 import './styles/index.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
@@ -16,9 +17,11 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         <SkillProvider>
           <TaskProvider>
             <RoadmapProvider>
-              <BrowserRouter>
-                <App />
-              </BrowserRouter>
+              <GoalProvider>
+                <BrowserRouter>
+                  <App />
+                </BrowserRouter>
+              </GoalProvider>
             </RoadmapProvider>
           </TaskProvider>
         </SkillProvider>
